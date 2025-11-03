@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::io::{self, BufRead, BufReader};
 use std::path::Path;
 
 use anyhow::Result;
@@ -11,13 +11,17 @@ use regex::Regex;
 #[derive(ClapParser, Default)]
 #[command(version, about, long_about = None)]
 pub struct Cli {
+    // Show header
+    #[arg(short='H', long, value_name = "HEADER")]
+    pub show_header: bool,
+
     // One or more URLs to fetch
     #[arg(value_name = "REGEX", required = true)]
     pub regex: String,
 
     // One or more URLs to fetch
     #[arg(value_name = "FILE", required = true)]
-    pub file_name: String,
+    pub file_names: Vec<String>,
 }
 
 fn main() -> Result<()> {
@@ -27,23 +31,44 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    info!("Regex = {}", cli.regex);
-    info!("File = {}", cli.file_name);
+    let regex = build_regex(&cli.regex)?;
+    let show_header = cli.show_header || cli.file_names.len() > 1;
 
-    let regex = Regex::new(&cli.regex)?;
+    for file_name in cli.file_names.iter() {
+        process_file_name(&file_name, &regex, show_header)?;
+    }
 
-    let file_path = Path::new(&cli.file_name);
+    Ok(())
+}
 
-    let file = File::open(&file_path)?;
+fn build_regex(regex_str: &str) -> Result<Regex, regex::Error> {
+    Regex::new(regex_str)
+}
 
-    let reader = BufReader::new(file);
+fn process_file_name(file_name: &str, regex: &Regex, show_header: bool) -> Result<()> {
+    let reader = open_reader(file_name)?;
+
+    let prefix = build_prefix(&file_name, show_header);
 
     for line_result in reader.lines() {
         let line = line_result?;
         if regex.is_match(&line) {
-            println!("{}", line);
+            println!("{}{}", prefix, line);
         }
     }
 
     Ok(())
+}
+
+fn build_prefix(file_name: &str, show_header: bool) -> String {
+    if show_header {
+        format!("{}:", file_name)
+    } else {
+        String::new()
+    }
+}
+
+fn open_reader<P: AsRef<Path>>(path: P) -> io::Result<BufReader<File>> {
+    let file = File::open(path)?;
+    Ok(BufReader::new(file))
 }
