@@ -19,6 +19,10 @@ pub struct Cli {
     #[arg(short, long, value_name = "CASE INSENSITIVE")]
     pub insensitive: bool,
 
+    /// Invert match
+    #[arg(short='v', long, value_name = "INVERT MATCH")]
+    pub invert_match: bool,
+
     /// Regex to search for
     #[arg(value_name = "REGEX", required = true)]
     pub regex: String,
@@ -39,7 +43,7 @@ fn main() -> Result<()> {
     let show_header = cli.show_header || cli.file_names.len() > 1;
 
     for file_name in cli.file_names.iter() {
-        process_file_name(&file_name, &regex, show_header, io::stdout())?;
+        process_file_name(&file_name, &regex, show_header, cli.invert_match, io::stdout())?;
     }
 
     Ok(())
@@ -56,6 +60,7 @@ fn process_file_name<P: AsRef<Path>, W: Write>(
     file_name: P,
     regex: &Regex,
     show_header: bool,
+    invert_match: bool,
     mut out: W,
 ) -> io::Result<()> {
     let reader = open_reader(file_name.as_ref())?;
@@ -63,12 +68,17 @@ fn process_file_name<P: AsRef<Path>, W: Write>(
 
     for line_result in reader.lines() {
         let line = line_result?;
-        if regex.is_match(&line) {
+        if should_write_line(regex.is_match(&line), invert_match) {
             writeln!(out, "{}{}", prefix, line)?;
         }
     }
 
     Ok(())
+}
+
+fn should_write_line(is_match: bool, invert_match: bool) -> bool {
+    is_match != invert_match
+
 }
 
 fn build_prefix(file_name: &str, show_header: bool) -> String {
@@ -174,7 +184,7 @@ mod tests {
         let regex = build_regex("hello", false).unwrap(); // case-sensitive
 
         let mut buf: Vec<u8> = Vec::new();
-        process_file_name(&path, &regex, false, &mut buf)?;
+        process_file_name(&path, &regex, false, false, &mut buf)?;
 
         let out = String::from_utf8(buf).expect("output was not valid UTF-8");
         assert!(out.contains("hello"));
@@ -194,7 +204,7 @@ mod tests {
         let regex = build_regex("foo", false).unwrap();
 
         let mut buf: Vec<u8> = Vec::new();
-        process_file_name(&path, &regex, true, &mut buf)?; // show_header = true
+        process_file_name(&path, &regex, true, false, &mut buf)?; // show_header = true
 
         let out = String::from_utf8(buf).unwrap();
         // Expect the prefix (filename:) and the matched line
@@ -213,9 +223,49 @@ mod tests {
         let regex = build_regex("zzz", false).unwrap();
 
         let mut buf: Vec<u8> = Vec::new();
-        process_file_name(&path, &regex, false, &mut buf)?;
+        process_file_name(&path, &regex, false, false, &mut buf)?;
 
         assert!(buf.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_write_line_match_and_no_invert() -> Result<()> {
+        let invert = false;
+        let is_match = true;
+
+        assert_eq!(should_write_line(is_match, invert), true);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_write_line_match_and_invert() -> Result<()> {
+        let invert = true;
+        let is_match = true;
+
+        assert_eq!(should_write_line(is_match, invert), false);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_write_line_no_match_and_invert() -> Result<()> {
+        let invert = false;
+        let is_match = true;
+
+        assert_eq!(should_write_line(is_match, invert), true);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_write_line_no_match_and_no_invert() -> Result<()> {
+        let invert = false;
+        let is_match = false;
+
+        assert_eq!(should_write_line(is_match, invert), false);
+
         Ok(())
     }
 }
