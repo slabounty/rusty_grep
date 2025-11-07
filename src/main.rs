@@ -27,6 +27,10 @@ pub struct Cli {
     #[arg(short='n', long, value_name = "LINE NUMBERS")]
     pub show_line_numbers: bool,
 
+    /// Count matching lines
+    #[arg(short, long, value_name = "COUNT MATCHING LINES")]
+    pub count_matching_lines: bool,
+
     /// Regex to search for
     #[arg(value_name = "REGEX", required = true)]
     pub regex: String,
@@ -48,7 +52,7 @@ fn main() -> Result<()> {
 
 
     for file_name in cli.file_names.iter() {
-        process_file_name(&file_name, &regex, show_header, cli.invert_match, cli.show_line_numbers, io::stdout())?;
+        process_file_name(&file_name, &regex, show_header, cli.invert_match, cli.show_line_numbers, cli.count_matching_lines, io::stdout())?;
     }
 
     Ok(())
@@ -67,25 +71,45 @@ fn process_file_name<P: AsRef<Path>, W: Write>(
     show_header: bool,
     invert_match: bool,
     show_line_numbers: bool,
+    count_matching_lines: bool,
     mut out: W,
 ) -> io::Result<()> {
+    let file_path = file_name.as_ref();
+    let file_name_str = file_path.to_str().unwrap_or_default(); // safe fallback
+
     let reader = open_reader(file_name.as_ref())?;
     let mut line_number: u32 = 0;
+    let mut matching_lines: u32 = 0;
 
     for line_result in reader.lines() {
         line_number += 1;
         let line = line_result?;
-        if should_write_line(regex.is_match(&line), invert_match) {
-            let prefix = build_prefix(file_name.as_ref().to_str().unwrap_or_default(), show_header, show_line_numbers, line_number);
+        let is_match = regex.is_match(&line);
+
+        if is_match {
+            matching_lines += 1;
+        }
+
+        if should_write_line(is_match, invert_match, count_matching_lines) {
+            let prefix = build_prefix(file_name_str, show_header, show_line_numbers, line_number);
             writeln!(out, "{}{}", prefix, line)?;
+        }
+    }
+
+    if count_matching_lines {
+        if show_header {
+            writeln!(out, "{}:{}", file_name_str, matching_lines)?;
+        }
+        else {
+            writeln!(out, "{}", matching_lines)?;
         }
     }
 
     Ok(())
 }
 
-fn should_write_line(is_match: bool, invert_match: bool) -> bool {
-    is_match != invert_match
+fn should_write_line(is_match: bool, invert_match: bool, count_matching_lines: bool) -> bool {
+    is_match != invert_match && !count_matching_lines
 }
 
 fn build_prefix(file_name: &str, show_header: bool, show_line_numbers: bool, line_number: u32) -> String {
@@ -215,13 +239,65 @@ mod tests {
         let regex = build_regex("hello", false).unwrap(); // case-sensitive
 
         let mut buf: Vec<u8> = Vec::new();
-        process_file_name(&path, &regex, false, false, false, &mut buf)?;
+        process_file_name(&path, &regex, false, false, false, false, &mut buf)?;
 
         let out = String::from_utf8(buf).expect("output was not valid UTF-8");
         assert!(out.contains("hello"));
         assert!(!out.contains("world"));
         // "HELLO" only matches if case-insensitive; here it should not.
         assert!(!out.contains("HELLO"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_process_file_name_matches_lines_count_matching() -> std::io::Result<()> {
+        let mut tmp = NamedTempFile::new()?;
+        writeln!(tmp, "hello")?;
+        writeln!(tmp, "world")?;
+        writeln!(tmp, "HELLO")?;
+        // Flush/close the file handle so reads see it
+        let path = tmp.path().to_path_buf();
+
+        let regex = build_regex("hello", false).unwrap(); // case-sensitive
+
+        let mut buf: Vec<u8> = Vec::new();
+        process_file_name(&path, &regex, false, false, false, true, &mut buf)?;
+
+        let out = String::from_utf8(buf).expect("output was not valid UTF-8");
+        println!("out = {}", out);
+        assert!(!out.contains("hello"));
+        assert!(!out.contains("world"));
+        // "HELLO" only matches if case-insensitive; here it should not.
+        assert!(!out.contains("HELLO"));
+        assert!(out.contains("1"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_process_file_name_matches_lines_count_matching_with_header() -> std::io::Result<()> {
+        let mut tmp = NamedTempFile::new()?;
+        writeln!(tmp, "hello")?;
+        writeln!(tmp, "world")?;
+        writeln!(tmp, "HELLO")?;
+        // Flush/close the file handle so reads see it
+        let path = tmp.path().to_path_buf();
+
+        let regex = build_regex("hello", false).unwrap(); // case-sensitive
+
+        let mut buf: Vec<u8> = Vec::new();
+        process_file_name(&path, &regex, true, false, false, true, &mut buf)?;
+
+        let out = String::from_utf8(buf).expect("output was not valid UTF-8");
+
+        let filename = path.to_str().unwrap();
+
+        println!("out = {}", out);
+        assert!(!out.contains("hello"));
+        assert!(!out.contains("world"));
+        // "HELLO" only matches if case-insensitive; here it should not.
+        assert!(!out.contains("HELLO"));
+        assert!(out.contains("1"));
+        assert!(out.contains(&format!("{}:1", filename)));
         Ok(())
     }
 
@@ -235,7 +311,7 @@ mod tests {
         let regex = build_regex("foo", false).unwrap();
 
         let mut buf: Vec<u8> = Vec::new();
-        process_file_name(&path, &regex, true, false, false, &mut buf)?; // show_header = true
+        process_file_name(&path, &regex, true, false, false, false, &mut buf)?; // show_header = true
 
         let out = String::from_utf8(buf).unwrap();
         // Expect the prefix (filename:) and the matched line
@@ -254,48 +330,97 @@ mod tests {
         let regex = build_regex("zzz", false).unwrap();
 
         let mut buf: Vec<u8> = Vec::new();
-        process_file_name(&path, &regex, false, false, false, &mut buf)?;
+        process_file_name(&path, &regex, false, false, false, false, &mut buf)?;
 
         assert!(buf.is_empty());
         Ok(())
     }
 
+    /// Should write tests
     #[test]
-    fn test_should_write_line_match_and_no_invert() -> Result<()> {
+    fn test_should_write_line_match_and_no_invert_without_count() -> Result<()> {
         let invert = false;
         let is_match = true;
+        let count_matching_lines = false;
 
-        assert_eq!(should_write_line(is_match, invert), true);
+        assert_eq!(should_write_line(is_match, invert, count_matching_lines), true);
 
         Ok(())
     }
 
     #[test]
-    fn test_should_write_line_match_and_invert() -> Result<()> {
+    fn test_should_write_line_match_and_invert_without_count() -> Result<()> {
         let invert = true;
         let is_match = true;
+        let count_matching_lines = false;
 
-        assert_eq!(should_write_line(is_match, invert), false);
+        assert_eq!(should_write_line(is_match, invert,  count_matching_lines), false);
 
         Ok(())
     }
 
     #[test]
-    fn test_should_write_line_no_match_and_invert() -> Result<()> {
+    fn test_should_write_line_no_match_and_invert_without_count() -> Result<()> {
         let invert = false;
         let is_match = true;
+        let count_matching_lines = false;
 
-        assert_eq!(should_write_line(is_match, invert), true);
+        assert_eq!(should_write_line(is_match, invert,  count_matching_lines), true);
 
         Ok(())
     }
 
     #[test]
-    fn test_should_write_line_no_match_and_no_invert() -> Result<()> {
+    fn test_should_write_line_no_match_and_no_invert_without_count() -> Result<()> {
         let invert = false;
         let is_match = false;
+        let count_matching_lines = false;
 
-        assert_eq!(should_write_line(is_match, invert), false);
+        assert_eq!(should_write_line(is_match, invert,  count_matching_lines), false);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_write_line_match_and_no_invert_with_count() -> Result<()> {
+        let invert = false;
+        let is_match = true;
+        let count_matching_lines = true;
+
+        assert_eq!(should_write_line(is_match, invert,  count_matching_lines), false);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_write_line_match_and_invert_with_count() -> Result<()> {
+        let invert = true;
+        let is_match = true;
+        let count_matching_lines = true;
+
+        assert_eq!(should_write_line(is_match, invert,  count_matching_lines), false);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_write_line_no_match_and_invert_with_count() -> Result<()> {
+        let invert = false;
+        let is_match = true;
+        let count_matching_lines = true;
+
+        assert_eq!(should_write_line(is_match, invert,  count_matching_lines), false);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_should_write_line_no_match_and_no_invert_with_count() -> Result<()> {
+        let invert = false;
+        let is_match = false;
+        let count_matching_lines = true;
+
+        assert_eq!(should_write_line(is_match, invert,  count_matching_lines), false);
 
         Ok(())
     }
