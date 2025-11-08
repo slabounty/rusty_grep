@@ -3,17 +3,21 @@ use std::io::{self, Write, BufRead, BufReader};
 use std::path::Path;
 
 use anyhow::Result;
-use clap::{Parser as ClapParser};
+use clap::{ArgAction, Parser as ClapParser};
 use log::{info};
 use regex::{Regex, RegexBuilder};
 
 
 #[derive(ClapParser, Default)]
-#[command(version, about, long_about = None)]
+#[command(version, about, long_about = None, disable_help_flag=true)]
 pub struct Cli {
     /// Show header
     #[arg(short='H', long, value_name = "HEADER")]
     pub show_header: bool,
+
+    /// Don't show header
+    #[arg(short='h', long, value_name = "NO HEADER")]
+    pub no_header: bool,
 
     /// Case insenstive search
     #[arg(short, long, value_name = "CASE INSENSITIVE")]
@@ -38,6 +42,10 @@ pub struct Cli {
     /// One or more files to check
     #[arg(value_name = "FILE", required = true)]
     pub file_names: Vec<String>,
+
+    /// Manually restore --help
+    #[arg(long = "help", action = ArgAction::Help, help = "Print help information")]
+    help: Option<bool>,
 }
 
 fn main() -> Result<()> {
@@ -52,7 +60,7 @@ fn main() -> Result<()> {
 
 
     for file_name in cli.file_names.iter() {
-        process_file_name(&file_name, &regex, show_header, cli.invert_match, cli.show_line_numbers, cli.count_matching_lines, io::stdout())?;
+        process_file_name(&file_name, &regex, show_header, cli.no_header, cli.invert_match, cli.show_line_numbers, cli.count_matching_lines, io::stdout())?;
     }
 
     Ok(())
@@ -69,6 +77,7 @@ fn process_file_name<P: AsRef<Path>, W: Write>(
     file_name: P,
     regex: &Regex,
     show_header: bool,
+    no_header: bool,
     invert_match: bool,
     show_line_numbers: bool,
     count_matching_lines: bool,
@@ -91,7 +100,7 @@ fn process_file_name<P: AsRef<Path>, W: Write>(
         }
 
         if should_write_line(is_match, invert_match, count_matching_lines) {
-            let prefix = build_prefix(file_name_str, show_header, show_line_numbers, line_number);
+            let prefix = build_prefix(file_name_str, show_header, no_header, show_line_numbers, line_number);
             writeln!(out, "{}{}", prefix, line)?;
         }
     }
@@ -112,10 +121,10 @@ fn should_write_line(is_match: bool, invert_match: bool, count_matching_lines: b
     is_match != invert_match && !count_matching_lines
 }
 
-fn build_prefix(file_name: &str, show_header: bool, show_line_numbers: bool, line_number: u32) -> String {
+fn build_prefix(file_name: &str, show_header: bool, no_header: bool, show_line_numbers: bool, line_number: u32) -> String {
     let mut prefix = String::new();
 
-    if show_header {
+    if show_header && !no_header {
         prefix.push_str(&format!("{}:", file_name));
     }
 
@@ -157,7 +166,7 @@ mod tests {
 
     #[test]
     fn test_build_prefix_with_header_without_line_numbers() -> Result<()> {
-        let prefix_with_header = build_prefix("some_file", true, false, 22);
+        let prefix_with_header = build_prefix("some_file", true, false, false, 22);
 
         assert_eq!(prefix_with_header, "some_file:");
 
@@ -166,7 +175,7 @@ mod tests {
 
     #[test]
     fn test_build_prefix_without_header_without_line_numbers() -> Result<()> {
-        let prefix_with_header = build_prefix("some_file", false, false, 22);
+        let prefix_with_header = build_prefix("some_file", false, false, false, 22);
 
         assert_eq!(prefix_with_header, "");
 
@@ -175,7 +184,7 @@ mod tests {
 
     #[test]
     fn test_build_prefix_with_header_with_line_numbers() -> Result<()> {
-        let prefix_with_header = build_prefix("some_file", true, true, 22);
+        let prefix_with_header = build_prefix("some_file", true, false, true, 22);
 
         assert_eq!(prefix_with_header, "some_file:22:");
 
@@ -184,7 +193,7 @@ mod tests {
 
     #[test]
     fn test_build_prefix_without_header_with_line_numbers() -> Result<()> {
-        let prefix_with_header = build_prefix("some_file", false, true, 22);
+        let prefix_with_header = build_prefix("some_file", false, false, true, 22);
 
         assert_eq!(prefix_with_header, "22:");
 
@@ -239,7 +248,7 @@ mod tests {
         let regex = build_regex("hello", false).unwrap(); // case-sensitive
 
         let mut buf: Vec<u8> = Vec::new();
-        process_file_name(&path, &regex, false, false, false, false, &mut buf)?;
+        process_file_name(&path, &regex, false, false, false, false, false, &mut buf)?;
 
         let out = String::from_utf8(buf).expect("output was not valid UTF-8");
         assert!(out.contains("hello"));
@@ -261,7 +270,7 @@ mod tests {
         let regex = build_regex("hello", false).unwrap(); // case-sensitive
 
         let mut buf: Vec<u8> = Vec::new();
-        process_file_name(&path, &regex, false, false, false, true, &mut buf)?;
+        process_file_name(&path, &regex, false, false, false, false, true, &mut buf)?;
 
         let out = String::from_utf8(buf).expect("output was not valid UTF-8");
         println!("out = {}", out);
@@ -285,7 +294,7 @@ mod tests {
         let regex = build_regex("hello", false).unwrap(); // case-sensitive
 
         let mut buf: Vec<u8> = Vec::new();
-        process_file_name(&path, &regex, true, false, false, true, &mut buf)?;
+        process_file_name(&path, &regex, true, false, false, false, true, &mut buf)?;
 
         let out = String::from_utf8(buf).expect("output was not valid UTF-8");
 
@@ -311,7 +320,7 @@ mod tests {
         let regex = build_regex("foo", false).unwrap();
 
         let mut buf: Vec<u8> = Vec::new();
-        process_file_name(&path, &regex, true, false, false, false, &mut buf)?; // show_header = true
+        process_file_name(&path, &regex, true, false, false, false, false, &mut buf)?; // show_header = true
 
         let out = String::from_utf8(buf).unwrap();
         // Expect the prefix (filename:) and the matched line
@@ -330,7 +339,7 @@ mod tests {
         let regex = build_regex("zzz", false).unwrap();
 
         let mut buf: Vec<u8> = Vec::new();
-        process_file_name(&path, &regex, false, false, false, false, &mut buf)?;
+        process_file_name(&path, &regex, false, false, false, false, false, &mut buf)?;
 
         assert!(buf.is_empty());
         Ok(())
